@@ -232,70 +232,6 @@ def load_and_split_data(dataset_name, random_state):
         (train_X_original, train_y_original), (test_X_original, test_y_original) = tf.keras.datasets.cifar100.load_data()
         input_shape = (32, 32, 3)
 
-    # elif dataset_name.lower() == "tiny_imagenet":
-    #     logging.info("Loading Tiny ImageNet dataset")
-    #     splits = {
-    #         'train': 'data/train-00000-of-00001-1359597a978bc4fa.parquet',
-    #         'valid': 'data/valid-00000-of-00001-70d52db3c749a935.parquet'
-    #     }
-        
-    #     # Load training and validation data
-    #     train_df = pd.read_parquet("hf://datasets/zh-plus/tiny-imagenet/" + splits['train'])
-    #     valid_df = pd.read_parquet("hf://datasets/zh-plus/tiny-imagenet/" + splits['valid'])
-        
-    #     logging.info(f"Train DataFrame head:\n{train_df.head()}")
-    #     logging.info(f"Validation DataFrame head:\n{valid_df.head()}")
-        
-    #     # Decode images from binary data
-    #     def decode_image(row):
-    #         binary_data = row['bytes']  # Extract binary data
-    #         try:
-    #             image = Image.open(io.BytesIO(binary_data))  # Decode the image
-    #             image = image.convert("RGB")  # Ensure RGB
-    #             image = image.resize((64, 64))  # Resize to 64x64
-    #             return np.array(image)  # Convert to numpy array
-    #         except Exception as e:
-    #             logging.error(f"Failed to decode or resize image: {e}")
-    #             return None
-
-    #     # Decode and filter valid images
-    #     train_X_original = np.stack([
-    #         img for img in (decode_image(img) for img in train_df['image']) if img is not None
-    #     ])
-    #     test_X_original = np.stack([
-    #         img for img in (decode_image(img) for img in valid_df['image']) if img is not None
-    #     ])
-    #     logging.info(f"Shape of train_X_original: {train_X_original.shape}")
-    #     logging.info(f"Shape of test_X_original: {test_X_original.shape}")
-
-    #     train_y_original = np.array(train_df['label'])
-    #     test_y_original = np.array(valid_df['label'])
-
-    #     # Set random seed for reproducibility (optional)
-    #     np.random.seed(random_state)
-
-    #     # Calculate the number of samples for half the dataset
-    #     num_samples_train = train_X_original.shape[0] // 4
-    #     num_samples_test = test_X_original.shape[0] // 2
-
-    #     # Generate random indices to sample
-    #     random_indices_train = np.random.choice(train_X_original.shape[0], size=num_samples_train, replace=False)
-    #     random_indices_test = np.random.choice(test_X_original.shape[0], size=num_samples_test, replace=False)
-
-    #     # Sample the images and labels using the random indices
-    #     train_X_original = train_X_original[random_indices_train]
-    #     train_y_original = train_y_original[random_indices_train]
-    #     test_X_original = test_X_original[random_indices_test]
-    #     test_y_original = test_y_original[random_indices_test]
-
-    #     logging.info(f"Shape of sampled train_X: {train_X_original.shape}, train_y: {train_y_original.shape}")
-    #     logging.info(f"Shape of sampled test_X: {test_X_original.shape}, test_y: {test_y_original.shape}")
-
-        
-    #     input_shape = (64, 64, 3)  # Tiny ImageNet images are 64x64 RGB
-    #     logging.info("Tiny ImageNet loaded successfully")
-
-
     elif dataset_name.lower() == "gtsrb":
         train_csv_path = '/cs/cs_groups/cliron_group/Calibrato/GTSRB/data/Train.csv'
         test_csv_path = '/cs/cs_groups/cliron_group/Calibrato/GTSRB/data/Test.csv'
@@ -980,7 +916,6 @@ def main(dataset_name, random_state, model_type="cnn", metric="L2", transformed=
         "cifar10": 35,
         "cifar100": 75,
         "sign_language": 25,
-        # "tiny_imagenet": 30,
         "gtsrb": 20,
     }
     model = prepare_model(X_train, y_train, X_val, y_val, dataset_name, random_state, model_type, dataset_epochs)
