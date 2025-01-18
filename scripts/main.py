@@ -6,7 +6,7 @@ import os
 from PIL import Image
 
 # Add the absolute path to the root directory of the project
-sys.path.append("/cs/cs_groups/cliron_group/Calibrato")
+# sys.path.append("output")
 import time
 import io
 
@@ -233,13 +233,13 @@ def load_and_split_data(dataset_name, random_state):
         input_shape = (32, 32, 3)
 
     elif dataset_name.lower() == "gtsrb":
-        train_csv_path = '/cs/cs_groups/cliron_group/Calibrato/GTSRB/data/Train.csv'
-        test_csv_path = '/cs/cs_groups/cliron_group/Calibrato/GTSRB/data/Test.csv'
+        train_csv_path = 'output/GTSRB/data/Train.csv'
+        test_csv_path = 'output/GTSRB/data/Test.csv'
         return load_and_split_gtsrb_data(train_csv_path, test_csv_path, random_state)
     
     elif dataset_name.lower() == "signlanguage":
-        train_csv_path = '/cs/cs_groups/cliron_group/Calibrato/SignLanguage/data/sign_mnist_train.csv'
-        test_csv_path = '/cs/cs_groups/cliron_group/Calibrato/SignLanguage/data/sign_mnist_test.csv'
+        train_csv_path = 'output/SignLanguage/data/sign_mnist_train.csv'
+        test_csv_path = 'output/SignLanguage/data/sign_mnist_test.csv'
         return load_and_split_signlanguage_data(train_csv_path, test_csv_path, random_state)
     
     else:
@@ -295,7 +295,7 @@ def train_or_load_model(X_train, y_train, X_val, y_val, dataset_name, random_sta
     Returns:
         model: Trained or loaded model.
     """
-    model_directory = f"{dataset_name}/{random_state}/saved_models"
+    model_directory = f"output/{dataset_name}/{random_state}/saved_models"
     model_path = os.path.join(model_directory, f"{model_type}_model.{file_format}")
     lock_path = f"{model_path}.lock"
     num_classes = len(np.unique(y_train))
@@ -347,63 +347,6 @@ def train_or_load_model(X_train, y_train, X_val, y_val, dataset_name, random_sta
             logger.info(f"Model saved at {model_path}.")
     
     return model
-
-
-
-def calibrate_with_geometric(model, X_train, y_train, X_val, y_val, X_test, y_test, library, metric='l2'):
-    """
-    Apply geometric calibration with the specified library (FAISS, KNN, or separation).
-    
-    Args:
-        model: The model to calibrate
-        X_train, y_train: Training data
-        X_val, y_val: Validation data
-        X_test, y_test: Test data
-        library: Library to use for stability calculation
-        metric: Distance metric to use (default: 'l2')
-    """
-    geo_calibrator = GeometricCalibrator(
-        model=model, 
-        X_train=X_train, 
-        y_train=y_train, 
-        library=library,
-        metric=metric
-    )
-    geo_calibrator.fit(X_val, y_val)
-
-    # Calibrate the test set
-    calibrated_probs = geo_calibrator.calibrate(X_test)
-    y_test_pred = np.argmax(calibrated_probs, axis=1)
-    accuracy = accuracy_score(y_test, y_test_pred)
-
-    logger.info(f"Accuracy after calibration with {library} using {metric} metric: {accuracy}")
-
-    return calibrated_probs, y_test_pred
-
-
-def calculate_ece(probs, y_pred, y_true, n_bins=20):
-    """
-    Calculate Expected Calibration Error (ECE).
-    """
-    confidence_of_pred_class = np.max(probs, axis=1)
-    bin_boundaries = np.linspace(0, 1, n_bins + 1)
-    bin_indices = np.digitize(confidence_of_pred_class, bin_boundaries) - 1
-
-    total_error = 0.0
-    for i in range(n_bins):
-        bin_mask = bin_indices == i
-        bin_confidences = confidence_of_pred_class[bin_mask]
-        bin_real = y_true[bin_mask]
-        bin_pred = y_pred[bin_mask]
-
-        if len(bin_confidences) > 0:
-            bin_acc = np.mean(bin_real == bin_pred)
-            bin_conf = np.mean(bin_confidences)
-            bin_weight = len(bin_confidences) / len(probs)
-            total_error += bin_weight * np.abs(bin_acc - bin_conf)
-
-    logger.info(f"Final ECE value: {total_error}")
-    return total_error
 
 def calibrate_specialized(features_val, y_val, features_test, y_test, calibrator, name, technique_dirs, y_test_pred):
     """
@@ -521,11 +464,18 @@ def calibrate_geometric(model, X_train, y_train, X_val, y_val, X_test, y_test, c
     Perform geometric calibrations (FAISS, KNN, Separation) with optional binning.
     """
     try:
-        # Apply compression if provided
+        logger.info("\n=== Starting Geometric Calibration ===")
+        logger.info(f"Initial shapes before predictions:")
+        logger.info(f"- X_train: {X_train.shape}")
+        logger.info(f"- X_val: {X_val.shape}")
+        logger.info(f"- X_test: {X_test.shape}")
+
+        # Initialize stability space with compression - it will handle compression internally
+        logger.info("\nInitializing StabilitySpace with compression:")
         stability_space = StabilitySpace(
-            X_train, 
-            y_train, 
-            compression=compression,
+            X_train,
+            y_train,
+            compression=compression,  # Pass compression here - it will be applied during stability calculations
             library=calibrator["library"],
             faiss_mode=calibrator.get("mode"), 
             metric=metric
@@ -886,7 +836,7 @@ def perform_calibrations(calibrations, model, X_train, y_train, X_val, y_val, X_
 def main(dataset_name, random_state, model_type="cnn", metric="L2", transformed=False, trust_alpha=0.1,
          compression_types=None, compression_params=2):
     
-    base_path = f"/cs/cs_groups/cliron_group/Calibrato/{dataset_name}/{random_state}/{model_type}/{metric}"
+    base_path = f"output/{dataset_name}/{random_state}/{model_type}/{metric}/{compression_types}/{compression_params}"
     if transformed:
         base_path = os.path.join(base_path, "transformed")
     all_results_path = os.path.join(base_path, "all")
@@ -898,7 +848,7 @@ def main(dataset_name, random_state, model_type="cnn", metric="L2", transformed=
 
     # Initialize directories
     base_dir, technique_dirs, all_results_dir = initialize_directories(
-        f"/cs/cs_groups/cliron_group/Calibrato/{dataset_name}/{random_state}/{model_type}/{metric}",
+        f"output/{dataset_name}/{random_state}/{model_type}/{metric}/{compression_types}/{compression_params}",
         transformed, dataset_name, random_state, model_type, metric, trust_alpha
     )
     compression = None
@@ -950,23 +900,27 @@ def main(dataset_name, random_state, model_type="cnn", metric="L2", transformed=
     "isotonic": IsotonicCalibrator(),
     "platt": PlattCalibrator(),
     "temperature": TemperatureScalingCalibrator(),
-    "trust_score_filtered": {"method": "trust_score", "use_filtering": True},
-    "trust_score_unfiltered": {"method": "trust_score", "use_filtering": False},
+    # "trust_score_filtered": {"method": "trust_score", "use_filtering": True},
+    # "trust_score_unfiltered": {"method": "trust_score", "use_filtering": False},
     "faiss_exact": {"library": "faiss", "mode": "exact"},
-    "faiss_exact_binned": {"library": "faiss", "mode": "exact", "binned": True},
+    # "faiss_exact_binned": {"library": "faiss", "mode": "exact", "binned": True},
     "knn": {"library": "knn", "mode": None},
-    "knn_binned": {"library": "knn", "mode": None, "binned": True},
+    # "knn_binned": {"library": "knn", "mode": None, "binned": True},
     # Add the new calibrators:
-    "sbc": SBCCalibrator(bins=15),  # Using SBCCalibrator with 15 bins
-    "hb": HBCalibrator(bins=50),    # Using HBCalibrator with 50 bins 
-    "bbq": BBQCalibrator(bins=50),  # Using BBQCalibrator with 50 bins
-    "beta": BetaCalibrator(bins=50), # Using BetaCalibrator with 50 bins
-    "ets": EnsembleTSCalibrator(temperature=1.0),
-    "separation": {"library": "separation", "mode": None},  # Add separation
+    # "sbc": SBCCalibrator(bins=15),  # Using SBCCalibrator with 15 bins
+    # "hb": HBCalibrator(bins=50),    # Using HBCalibrator with 50 bins
+    # "bbq": BBQCalibrator(bins=50),  # Using BBQCalibrator with 50 bins
+    # "beta": BetaCalibrator(bins=50), # Using BetaCalibrator with 50 bins
+    # "ets": EnsembleTSCalibrator(temperature=1.0),
+    # "separation": {"library": "separation", "mode": None},  # Add separation
     }
 
 
-    results, existing_results = perform_calibrations(calibrations, model, X_train, y_train, X_val, y_val, X_test, y_test, features_val, features_test, y_test_pred, technique_dirs, trust_alpha, metric, compression)
+    results, existing_results = perform_calibrations(
+        calibrations, model, X_train, y_train, X_val, y_val, X_test, y_test,
+        features_val, features_test, y_test_pred, technique_dirs, trust_alpha,
+        metric, compression
+    )
     save_results(results, existing_results, all_results_dir)
 
 

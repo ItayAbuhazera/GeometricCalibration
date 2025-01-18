@@ -148,7 +148,7 @@ def train_or_load_model(X_train, y_train, X_val, y_val, dataset_name, random_sta
     Returns:
         model: Trained or loaded model.
     """
-    model_directory = f"{dataset_name}/{random_state}/saved_models"
+    model_directory = f"outputs/{dataset_name}/{random_state}/saved_models"
     model_path = os.path.join(model_directory, f"{model_type}_model.{file_format}")
     num_classes = len(np.unique(y_train))
     input_shape = X_train.shape[1:]

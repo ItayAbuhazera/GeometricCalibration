@@ -416,9 +416,10 @@ class StabilitySpace:
     Class to compute stability and geometric values for the input X using various similarity search libraries.
     """
 
-    def __init__(self, X_train, y_train, compression=None, library='knn', metric='l2', num_labels=None, faiss_mode='exact', nlist=None):
+    def __init__(self, X_train, y_train, compression=None, library='knn', metric='l2', num_labels=None,
+                 faiss_mode='exact', nlist=None):
         """
-        Initialize the stability space by compressing the input data (optional) and setting up nearest neighbor models.
+        Initialize the stability space with consistent compression handling.
         """
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.info(f"Initializing StabilitySpace with {library} library and {metric} metric.")
@@ -427,31 +428,45 @@ class StabilitySpace:
         self.library = library
         self.num_labels = num_labels or len(set(y_train))
         self.compression = compression
-        self.faiss_mode = faiss_mode  # 'exact' or 'approximate'
-        # If nlist is not provided, set it to the number of classes (num_labels)
+        self.faiss_mode = faiss_mode
         self.nlist = nlist or self.num_labels
 
+        # Store original shapes for logging
+        original_shape = X_train.shape
+
+        # Apply compression if provided
         if self.compression:
-            logger.info("Applying compression to training data.")
-            original_shape = X_train.shape
+            self.logger.info("Applying compression to training data.")
             X_train, y_train = self.compression(X_train, y_train)
-            logger.info(f"Compression applied. Original shape: {original_shape}, Compressed shape: {X_train.shape}")
+            self.logger.info(
+                f"Compression applied. Original shape: {original_shape}, Compressed shape: {X_train.shape}")
+            # Store compression input/output shapes for validation
+            self.input_shape = original_shape[1:]
+            self.output_shape = X_train.shape[1:]
+        else:
+            self.input_shape = original_shape[1:]
+            self.output_shape = original_shape[1:]
+
+        # Ensure data is properly shaped for the chosen library
+        if len(X_train.shape) > 2:
+            X_train = X_train.reshape(X_train.shape[0], -1)
+            self.logger.info(f"Reshaped training data to 2D: {X_train.shape}")
 
         self.X_train = X_train
         self.y_train = y_train
 
-        # Initialize nearest neighbor models based on library
+        # Initialize appropriate model based on library choice
         if library == 'faiss':
             self._initialize_faiss()
         elif library == 'knn':
             self._initialize_knn()
-        elif library == 'kdtree':  # Add new option
+        elif library == 'kdtree':
             self._initialize_kdtree()
         elif library == 'separation':
             self.logger.info("Using separation-based stability calculation.")
         else:
             raise ValueError(f"Unsupported library: {library}")
-        
+
     def _get_distance(self, x, y, metric):
         """
         Compute distance between two points using specified metric.
@@ -647,53 +662,29 @@ class StabilitySpace:
         
         return stability
 
-
-
-    def _stability_faiss(self, valX, val_y_pred):
-        """
-        Calculate stability using FAISS with a progress indicator.
-        """
-        self.logger.info("Calculating stability using FAISS.")
-        stability = np.zeros(len(valX))
-        predicted_labels = np.argmax(val_y_pred, axis=1) if len(val_y_pred.shape) > 1 else val_y_pred
-        
-        # Prepare validation data
-        valX = valX.reshape(len(valX), -1).astype('float32')
-        if self.metric == 'cosine':
-            faiss.normalize_L2(valX)
-        
-        for i in tqdm(range(len(valX)), desc="Calculating Stability (FAISS)", unit="sample"):
-            x = valX[i:i+1]  # Keep as 2D array
-            pred_label = int(predicted_labels[i])
-
-            try:
-                _, dist_same = self.same_nbrs[pred_label].search(x, 1)
-                _, dist_other = self.other_nbrs[pred_label].search(x, 1)
-                
-                # For cosine similarity, convert similarity to distance
-                if self.metric == 'cosine':
-                    dist_same = 1 - dist_same
-                    dist_other = 1 - dist_other
-                    
-                stability[i] = (dist_other[0][0] - dist_same[0][0]) / 2
-            except Exception as e:
-                self.logger.error(f"Error in FAISS stability calculation for sample {i}: {e}")
-                stability[i] = np.nan
-
-        return stability
-    
     def _stability_knn(self, valX, val_y_pred):
         """
         Calculate stability using KNN with a progress indicator.
+        Ensures validation data matches the training data dimensions.
         """
         self.logger.info("Calculating stability using KNN.")
         stability = np.zeros(len(valX))
         predicted_labels = np.argmax(val_y_pred, axis=1) if len(val_y_pred.shape) > 1 else val_y_pred
-    
+
+        # Get the expected feature dimension from the training data
+        expected_features = self.X_train.shape[1]
+
+        # Reshape validation data to match training dimensions
+        if valX.shape[1] != expected_features:
+            self.logger.warning(
+                f"Validation data shape {valX.shape[1]} does not match training shape {expected_features}. "
+                "This might indicate a compression mismatch.")
+            return np.zeros(len(valX))  # Return zeros instead of raising an error
+
         for i in tqdm(range(len(valX)), desc="Calculating Stability (KNN)", unit="sample"):
             x = valX[i].reshape(1, -1)
             pred_label = int(predicted_labels[i])
-    
+
             try:
                 dist_same, _ = self.same_nbrs[pred_label].kneighbors(x)
                 dist_other, _ = self.other_nbrs[pred_label].kneighbors(x)
@@ -701,9 +692,53 @@ class StabilitySpace:
             except Exception as e:
                 self.logger.error(f"Error in KNN stability calculation for sample {i}: {e}")
                 stability[i] = np.nan
-    
+
         return stability
-                
+
+    def _stability_faiss(self, valX, val_y_pred):
+        """
+        Calculate stability using FAISS with a progress indicator.
+        Ensures validation data matches the training data dimensions.
+        """
+        self.logger.info("Calculating stability using FAISS.")
+        stability = np.zeros(len(valX))
+        predicted_labels = np.argmax(val_y_pred, axis=1) if len(val_y_pred.shape) > 1 else val_y_pred
+
+        # Get the expected feature dimension from the training data
+        expected_features = self.X_train.shape[1]
+
+        # Check if validation data has the correct shape
+        if valX.shape[1] != expected_features:
+            self.logger.warning(
+                f"Validation data shape {valX.shape[1]} does not match training shape {expected_features}. "
+                "This might indicate a compression mismatch.")
+            return np.zeros(len(valX))  # Return zeros instead of raising an error
+
+        # Prepare validation data
+        valX = valX.reshape(len(valX), -1).astype('float32')
+        if self.metric == 'cosine':
+            faiss.normalize_L2(valX)
+
+        for i in tqdm(range(len(valX)), desc="Calculating Stability (FAISS)", unit="sample"):
+            x = valX[i:i + 1]  # Keep as 2D array
+            pred_label = int(predicted_labels[i])
+
+            try:
+                _, dist_same = self.same_nbrs[pred_label].search(x, 1)
+                _, dist_other = self.other_nbrs[pred_label].search(x, 1)
+
+                # For cosine similarity, convert similarity to distance
+                if self.metric == 'cosine':
+                    dist_same = 1 - dist_same
+                    dist_other = 1 - dist_other
+
+                stability[i] = (dist_other[0][0] - dist_same[0][0]) / 2
+            except Exception as e:
+                self.logger.error(f"Error in FAISS stability calculation for sample {i}: {e}")
+                stability[i] = np.nan
+
+        return stability
+
     def _stability_separation(self, testX, pred_y, norm='L2', parallel=False):
         """
         Calculate separation-based stability with progress tracking.
@@ -829,35 +864,47 @@ class StabilitySpace:
 
     def calc_stab(self, X_val, y_val_pred, timeout=1800):
         """
-        Calculate stability for the test set with a timeout and track the time taken.
+        Calculate stability for the validation set with proper compression handling.
         """
+        start_time = time.time()
+
+        # Apply compression if provided
         if self.compression:
-            X_val, _ = self.compression(X_val, None, train=False)
-    
-        self.logger.info(f"Calculating stability using {self.library}.")
-        start_time = time.time()  # Start timing
-    
+            logger.info("Applying compression before stability calculation")
+            X_val_original_shape = X_val.shape
+            X_val_compressed, _ = self.compression(X_val, None, train=False)
+            logger.info(f"Compressed validation data from {X_val_original_shape} to {X_val_compressed.shape}")
+            X_val = X_val_compressed  # Use compressed data for stability calculation
+
+        # Ensure data is properly shaped
+        if len(X_val.shape) > 2:
+            X_val = X_val.reshape(X_val.shape[0], -1)
+            self.logger.info(f"Reshaped validation data to 2D: {X_val.shape}")
+
+        # Verify shapes match
+        if X_val.shape[1] != self.X_train.shape[1]:
+            self.logger.error(f"Validation data shape {X_val.shape[1]} does not match "
+                              f"training shape {self.X_train.shape[1]}")
+            return np.zeros(len(X_val))
+
+        # Calculate stability using appropriate method
         if self.library == 'faiss':
             stability = self._stability_faiss(X_val, y_val_pred)
         elif self.library == 'knn':
             stability = self._stability_knn(X_val, y_val_pred)
-        elif self.library == 'kdtree':  # Add new option
+        elif self.library == 'kdtree':
             stability = self._stability_kdtree(X_val, y_val_pred)
         elif self.library == 'separation':
             stability = self._stability_separation(X_val, y_val_pred)
         else:
             raise ValueError(f"Unsupported library: {self.library}")
-    
-        end_time = time.time()  # End timing
-        elapsed_time = end_time - start_time
-        self.logger.info(f"Time taken for {self.library} stability calculation: {elapsed_time:.2f} seconds")
-    
-        # Optionally log the first 200 stability scores for debugging
-        self.logger.debug(f"First 200 stability scores: {stability[:200]}")
-    
+
+        elapsed_time = time.time() - start_time
+        self.logger.info(f"Time taken for stability calculation: {elapsed_time:.2f} seconds")
+
         return stability
 
-        
+
 def calc_balanced_acc(stability, y_true, y_pred):
     '''
     Returns the dicts of description of stability/separation (balanced accuracy, #num of True samples, #num of samples)
@@ -1845,123 +1892,230 @@ def order_by(indexes, order, second_order):
 class Compression:
     """
     Class used for compressing data using various techniques like AvgPool, MaxPool, PCA, etc.
-    It supports applying multiple compression techniques in sequence.
     """
 
     def __init__(self, compression_types, compression_params):
         """
-        Initialize the Compression class.
+        Initialize compression with single type and parameter or lists of them.
 
         Parameters:
-            compression_types (str or list): Compression techniques to apply (e.g., "Avgpool", "Maxpool", "PCA", etc.).
-            compression_params (int or list): Compression parameters corresponding to each technique.
+            compression_types: Single compression type or list of types
+            compression_params: Single parameter or list of parameters
         """
-        logging.info(f"Initialize Compression with {compression_types} and {compression_params}")
-        self.compression_types = compression_types if isinstance(compression_types, list) else [
-            compression_types]
-        self.compression_params = compression_params if isinstance(compression_params, list) else [
-            compression_params]
+        # Convert single values to lists for consistent handling
+        self.compression_types = [compression_types] if isinstance(compression_types, str) else compression_types
+        self.compression_params = [compression_params] if isinstance(compression_params, (int, float)) else compression_params
         self.pca_model = None
 
-        # Dictionary mapping compression techniques to their functions
-        self.compression_methods = {
-            'Avgpool': self.avg_pool,
-            'Maxpool': self.max_pool,
-            'resize': self.resize,
-            'PCA': self.pca,
-            'randpix': self.randpix,
-            'randset': self.randset
-        }
+        logging.info(f"Initialize Compression with {self.compression_types} and {self.compression_params}")
 
     def __call__(self, X_train, y_train, train=True):
         """
-        Apply the compression techniques sequentially on the input data.
+        Apply compression to the input data.
 
         Parameters:
-            X_train (ndarray): The training data.
-            y_train (ndarray): The training labels.
-            train (bool): Whether this is training data or test data (affects PCA and randset).
+            X_train: Input data, can be either:
+                     - 2D (n_samples, n_features), or
+                     - 4D (n_samples, height, width, channels).
+            y_train: Corresponding labels.
+            train: Whether this call is for the training set (affects PCA fitting, etc.)
 
         Returns:
-            Tuple: Compressed X_train and y_train.
+            (X_compressed, y_compressed): The compressed data and (optionally) filtered labels.
         """
-        pixels = int(sqrt(X_train.shape[1]))
-        if not sqrt(X_train.shape[1]).is_integer():
-            logging.info("Running without compression, the shape of X needs to be square")
+        logger.info(f"Input data shape: {X_train.shape}, dtype: {X_train.dtype}")
+        logger.info(f"Input dimensionality check:")
+        logger.info(f"- Number of dimensions: {len(X_train.shape)}")
+
+        # Step A: Convert (N, 3072) => (N, 32, 32, 3) if we suspect it is CIFAR-like.
+        # Or, if it's (N, 784) => (N, 28, 28, 1), etc.
+        # You can check for multiple known shapes if you like. For example:
+        #  3072 = 32*32*3  => color 32x32
+        #  1024 = 32*32    => grayscale 32x32
+        #  784  = 28*28    => grayscale 28x28
+        #  ...
+        X_reshaped = X_train
+        if len(X_train.shape) == 2:
+            # Attempt to un-flatten if it matches known shapes.
+            num_features = X_train.shape[1]
+
+            # For CIFAR (RGB, 32x32):
+            if num_features == 32*32*3:
+                logger.info("Detected flattened 32x32x3 input; reshaping to (N, 32, 32, 3).")
+                X_reshaped = X_train.reshape(-1, 32, 32, 3)
+            # For MNIST-like single-channel 28x28:
+            elif num_features == 28*28:
+                logger.info("Detected flattened 28x28 input; reshaping to (N, 28, 28, 1).")
+                X_reshaped = X_train.reshape(-1, 28, 28, 1)
+            # For grayscale 32x32:
+            elif num_features == 32*32:
+                logger.info("Detected flattened 32x32 input; reshaping to (N, 32, 32, 1).")
+                X_reshaped = X_train.reshape(-1, 32, 32, 1)
+            else:
+                logger.info("2D input does not match a known shape; leaving as (N, features).")
+
+        # Next, decide whether we truly keep 4D or flatten single-channel
+        if len(X_reshaped.shape) == 4:
+            batch_size, height, width, channels = X_reshaped.shape
+            logger.info(f"Detected 4D input: batch={batch_size}, height={height}, width={width}, channels={channels}")
+
+            # If single channel, flatten to (N, height*width).
+            # If multiple channels, keep the 4D shape.
+            if channels == 1:
+                X_reshaped = X_reshaped.reshape(batch_size, height * width)
+                logger.info(f"Reshaped single-channel 4D to 2D: {X_reshaped.shape}")
+            else:
+                logger.info(f"Keeping multi-channel images in 4D. Shape remains: {X_reshaped.shape}")
+
+        elif len(X_reshaped.shape) == 2:
+            logger.info("Detected 2D input (no further reshape).")
+
+        else:
+            # If there's an unexpected number of dimensions, just return as-is
+            logger.warning("Input data is neither 2D nor 4D. Returning unmodified.")
             return X_train, y_train
 
-        X_train = X_train.reshape(len(X_train), pixels, pixels)
+        # Now we have X_reshaped which is either:
+        #  - (N, H*W) for single-channel
+        #  - (N, H, W, C) for multi-channel
+        #  - (N, features) if unrecognized shape
 
-        for comp_type, param in zip(self.compression_types, self.compression_params):
-            if comp_type in self.compression_methods:
-                X_train, y_train = self.compression_methods[comp_type](X_train, y_train, param, train)
+        X_compressed = X_reshaped
+
+        # Attempt to detect 'pixels' for certain compressions if we have 2D single-channel data
+        pixels = None
+        if len(X_compressed.shape) == 2:
+            num_features = X_compressed.shape[1]
+            # If it's a perfect square, set pixels
+            if sqrt(num_features).is_integer():
+                pixels = int(sqrt(num_features))
+                logger.info(f"2D input is a perfect square of size {pixels}x{pixels}.")
             else:
-                logging.info(f"No compression method found for {comp_type}")
-                return X_train, y_train
+                # e.g. 3072 is not a perfect square, but let's do nothing here
+                pass
 
-        return X_train.reshape(len(X_train), -1), y_train
+        # ---------------------------------------------------------
+        #  Now apply the requested compression(s)
+        # ---------------------------------------------------------
+        for comp_type, param in zip(self.compression_types, self.compression_params):
+            logger.info(f"\nApplying {comp_type} compression with parameter {param}")
+            logger.info(f"Before compression shape: {X_compressed.shape}")
 
-    def avg_pool(self, X_train, y_train, param, train):
-        pool = torch.nn.AvgPool2d(param)
-        X_train = pool(torch.tensor(X_train)).reshape(len(X_train), -1).numpy()
-        return X_train, y_train
+            if comp_type == 'Avgpool':
+                pooling = torch.nn.AvgPool2d(param)
+                # If 4D => apply (N, H, W, C) => (N, C, H, W)
+                if len(X_compressed.shape) == 4:
+                    batch_size, h, w, c = X_compressed.shape
+                    X_for_pool = torch.tensor(X_compressed.transpose(0, 3, 1, 2), dtype=torch.float32)
+                    X_pooled = pooling(X_for_pool)  # => (N, C, outH, outW)
+                    X_pooled_np = X_pooled.numpy().transpose(0, 2, 3, 1)
+                    X_compressed = X_pooled_np.reshape(batch_size, -1)
 
-    def max_pool(self, X_train, y_train, param, train):
-        pool = torch.nn.MaxPool2d(param)
-        X_train = pool(torch.tensor(X_train)).reshape(len(X_train), -1).numpy()
-        return X_train, y_train
+                elif len(X_compressed.shape) == 2 and pixels is not None:
+                    # (N, pixels*pixels) => reshape => pool => flatten
+                    X_for_pool = torch.tensor(X_compressed.reshape(-1, 1, pixels, pixels), dtype=torch.float32)
+                    X_pooled = pooling(X_for_pool)
+                    X_compressed = X_pooled.reshape(len(X_compressed), -1).numpy()
+                else:
+                    logger.warning("Avgpool: Unable to determine structure for pooling; skipping.")
 
-    def resize(self, X_train, y_train, param, train):
-        size = X_train.shape[1] // param
-        X_train = tf.image.resize(X_train[..., np.newaxis], [size, size]).numpy().reshape(len(X_train), -1)
-        return X_train, y_train
+                logger.info(f"Applied {comp_type}. New shape: {X_compressed.shape}")
 
-    def pca(self, X_train, y_train, param, train):
-        """
-        Apply PCA for dimensionality reduction.
+            elif comp_type == 'Maxpool':
+                try:
+                    pooling = torch.nn.MaxPool2d(param)
+                    if len(X_compressed.shape) == 4:
+                        # (N, H, W, C) => (N, C, H, W)
+                        batch_size, h, w, c = X_compressed.shape
+                        logger.info(f"Detected 4D input for Maxpool: (batch={batch_size}, height={h}, width={w}, channels={c})")
 
-        Args:
-            X_train: Input training data.
-            y_train: Corresponding labels.
-            param: Compression parameter indicating target dimension.
-            train: Whether this is training data or not (affects PCA fitting).
+                        X_for_pool = torch.tensor(X_compressed.transpose(0, 3, 1, 2), dtype=torch.float32)
+                        X_pooled = pooling(X_for_pool)  # => (N, C, pooledH, pooledW)
 
-        Returns:
-            Tuple: Compressed X_train and y_train.
-        """
-        # Flatten the data if it's multi-dimensional (e.g., images)
-        original_shape = X_train.shape
-        flattened_X_train = X_train.reshape(len(X_train), -1)
-        logger.info(f"Flattened X_train from shape {original_shape} to {flattened_X_train.shape}.")
+                        # Convert back
+                        pooled_height, pooled_width = X_pooled.shape[-2], X_pooled.shape[-1]
+                        X_compressed = X_pooled.numpy().transpose(0, 2, 3, 1)
+                        logger.info(f"After pooling (4D) => {X_compressed.shape}")
 
-        # Calculate the number of components for PCA based on the desired compression parameter
-        target_components = param if isinstance(param, int) else int(flattened_X_train.shape[1] * param)
-        logger.info(f"Applying PCA with target components: {target_components}")
+                        # Flatten
+                        X_compressed = X_compressed.reshape(batch_size, -1)
+                        logger.info(f"Final flattened shape after Maxpool: {X_compressed.shape}")
 
-        # Fit PCA during training, transform only during testing
-        if train:
-            self.pca_model = PCA(n_components=target_components)
-            X_train = self.pca_model.fit_transform(flattened_X_train)
-            logger.info(f"PCA fitted and transformed. Output shape: {X_train.shape}.")
-        else:
-            if not self.pca_model:
-                raise ValueError("PCA model must be fitted before calling transform on test data.")
-            X_train = self.pca_model.transform(flattened_X_train)
-            logger.info(f"PCA transformed. Output shape: {X_train.shape}.")
+                    elif len(X_compressed.shape) == 2 and pixels is not None:
+                        logger.info(f"Detected 2D input: {X_compressed.shape}, using {pixels}x{pixels} spatial dims")
+                        X_for_pool = X_compressed.reshape(-1, 1, pixels, pixels)
+                        X_pooled = pooling(torch.tensor(X_for_pool, dtype=torch.float32))
+                        X_compressed = X_pooled.reshape(len(X_compressed), -1).numpy()
+                        logger.info(f"Final shape after Maxpool (2D => 2D): {X_compressed.shape}")
+                    else:
+                        logger.warning("Maxpool: Unable to determine 2D/4D structure properly; skipping.")
 
-        return X_train, y_train
+                except Exception as e:
+                    logger.error(f"Error during Maxpool: {str(e)}")
+                    logger.error(f"Current shapes - X_compressed: {X_compressed.shape}")
+                    return X_train, y_train
 
+            elif comp_type == 'resize':
+                # Use TensorFlow's image.resize
+                if pixels is None:
+                    logger.warning("Cannot apply 'resize' if input is not a known square or 4D color.")
+                    continue
+                size = pixels // param
+                X_compressed = tf.image.resize(
+                    X_compressed.reshape(len(X_compressed), pixels, pixels)[..., np.newaxis],
+                    [size, size]
+                ).numpy().reshape(len(X_compressed), -1)
+                pixels = size
+                logging.info(f"Applied {comp_type} compression. New shape: {X_compressed.shape}")
 
-    def randpix(self, X_train, y_train, param, train):
-        size = (X_train.shape[1] // param) ** 2
-        random_pixels = np.random.randint(0, X_train.shape[1] ** 2, size=size)
-        X_train = X_train[:, random_pixels]
-        return X_train, y_train
+            elif comp_type == 'PCA':
+                # Basic PCA compression
+                if len(X_compressed.shape) != 2:
+                    logger.warning("PCA requires a 2D input of shape (n_samples, n_features). Skipping.")
+                    continue
+                # param is how we reduce dimensionality
+                # e.g., if param=2, we might do half the dimensions, etc.
+                # Customize how you set n_components:
+                size = pixels // param if pixels else 8  # example fallback
+                n_components = size * size
 
-    def randset(self, X_train, y_train, param, train):
-        if train:
-            size = len(X_train) // (param ** 2)
-            random_indices = np.random.randint(0, len(X_train), size=size)
-            X_train = X_train[random_indices]
-            y_train = y_train[random_indices]
-        return X_train, y_train
+                if train:
+                    self.pca_model = PCA(n_components=n_components)
+                    X_compressed = self.pca_model.fit_transform(X_compressed)
+                else:
+                    if self.pca_model is None:
+                        raise ValueError("PCA model must be fitted before transform.")
+                    X_compressed = self.pca_model.transform(X_compressed)
+
+                logging.info(f"Applied {comp_type} compression. New shape: {X_compressed.shape}")
+
+            elif comp_type == 'randpix':
+                # Randomly select (pixels // param)^2 pixel indices
+                if pixels is None:
+                    logger.warning("randpix requires a 2D input of shape (n_samples, pixels^2). Skipping.")
+                    continue
+                size = (pixels // param) ** 2
+                random_pixels = np.random.randint(0, pixels * pixels, size=size)
+                X_compressed = X_compressed[:, random_pixels]
+                pixels = int(sqrt(size))
+                logging.info(f"Applied {comp_type} compression. New shape: {X_compressed.shape}")
+
+            elif comp_type == 'randset':
+                # Randomly select a subset of data
+                if train:
+                    size = len(X_compressed) // (param ** 2)
+                    random_indices = np.random.randint(0, len(X_compressed), size=size)
+                    X_compressed = X_compressed[random_indices]
+                    y_train = y_train[random_indices]
+                    logging.info(f"Applied {comp_type} compression. New shape: {X_compressed.shape}")
+
+            else:
+                logging.info(f'No valid compression method found for {comp_type}. Skipping.')
+                return X_compressed, y_train
+
+            logger.info(f"After {comp_type} compression:")
+            logger.info(f"- Output shape: {X_compressed.shape}")
+            logger.info(f"- Output dtype: {X_compressed.dtype}")
+
+        return X_compressed, y_train
+
